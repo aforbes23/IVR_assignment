@@ -34,6 +34,7 @@ class image_converter:
     # get times
     self.time_trajectory = rospy.get_time()
 
+  # detects the yellow joint at the base of the robot and assigns coordinates to it
   def detect_yellow(self):
     cv_image_hsv = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2HSV)
     joint = cv2.inRange(cv_image_hsv, (24,50,50), (34,255,255))
@@ -45,6 +46,7 @@ class image_converter:
     
     return np.array([x,y])
 
+  # same as yellow with different color values for the rest
   def detect_blue(self):
     cv_image_hsv = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2HSV)
     joint = cv2.inRange(cv_image_hsv, (97,50,50), (121,255,255))
@@ -79,23 +81,31 @@ class image_converter:
     
     return np.array([x,y])
 
+  # takes the length of the first link in pixels as it doesn't move and uses
+  # the given length to get a conversion factor
   def pixel_to_meter(self, yellow_centre, blue_centre):
     link_length_p = np.linalg.norm(blue_centre - yellow_centre)
     con_factor = 3/link_length_p
     return con_factor
 
+  # takes the coordinates of the centres in pixels and converts them to meters for
+  # better angle estimation
   def convert_centres(self, centres_p):
     centres_m = []
+    # set joint 1 as the centre of the image
     centres_m.append(np.array([0,0]))
     con_factor = self.pixel_to_meter(centres_p[0], centres_p[1])
 
+    # for each joint after the first, get pixel values relative to joint 1 and convert to metres
+    # y values should be negative as they shouldn't be below joint 1
     for centre in centres_p[1:]:
         x = (centre[0] - centres_p[0][0])*con_factor
-        y = (abs(centre[1] - centres_p[0][1]))*con_factor
+        y = (centre[1] - centres_p[0][1])*con_factor
         centres_m.append(np.array([x,y]))
     
     return centres_m
 
+  # calculates the angle for the joint relative to the base frame
   def find_angles(self, centres_m):
     angles = []
     for i in range(1,len(centres_m)):
@@ -106,14 +116,19 @@ class image_converter:
   
     return np.array(angles)
   
+  # defines the angle of the joint in it's own frame
   def find_final_angles(self):
-    joint1 = self.im1_angles[1]
-    joint2 = self.im2_angles[1]
-    joint3 = self.im1_angles[2] + self.im2_angles[2] - joint1 - joint2
-    return np.array([joint1, joint2, joint3])
+    # no need to use angles[0] as it is always 0 in this case
+    # for 1 and 2, use the angle calculate in each of the cameras on their respective rotation axis
+    joint2 = self.im1_angles[1]
+    joint3 = self.im2_angles[1]
+    # add together the angles observed in each frame as it will be rotated depending on 2 and 3
+    # take away 2 and 3 to take it back to it's own frame
+    joint4 = self.im1_angles[2] + self.im2_angles[2] - joint2 - joint3
+    return np.array([joint2, joint3, joint4])
 
   
-  # Recieve angles from image2.py
+  # Recieve angles from image2.py and assigns them to a variable for use in method above
   def angle_listener(self, arr):
     self.im2_angles = np.array(arr.data)
 
@@ -126,15 +141,18 @@ class image_converter:
     except CvBridgeError as e:
       print(e)
 
+    # get joint coordinates
     yellow = self.detect_yellow()
     blue = self.detect_blue()
     green = self.detect_green()
     red = self.detect_red()
 
+    # get intial joint angles
     centres_p = [yellow, blue, green, red]
     centres_m = self.convert_centres(centres_p)
     self.im1_angles = self.find_angles(centres_m)
 
+    # find final joint angles and put them in a variable for publishing
     self.estimated_angles = Float64MultiArray()
     self.estimated_angles.data = np.array([0.0,0.0,0.0])
     self.estimated_angles.data = self.find_final_angles()
@@ -149,6 +167,7 @@ class image_converter:
     # Publish the results
     try: 
       self.image_pub1.publish(self.bridge.cv2_to_imgmsg(self.cv_image1, "bgr8"))
+      # publish the final angles to the estimated_joints topic
       self.estimated_angles_pub.publish(self.estimated_angles)
     except CvBridgeError as e:
       print(e)

@@ -26,10 +26,10 @@ class image_converter:
     self.robot_joint3_pub = rospy.Publisher("/robot/joint3_position_controller/command", Float64, queue_size=10)
     self.robot_joint4_pub = rospy.Publisher("/robot/joint4_position_controller/command", Float64, queue_size=10)
     # initialize subscirbers for joint positions from image2
-    self.yellow_pos_pub = rospy.Subscriber("joints/yellow_pos", Float64MultiArray, self.yellow_listener)
-    self.blue_pos_pub = rospy.Subscriber("joints/blue_pos", Float64MultiArray, self.blue_listener)
-    self.green_pos_pub = rospy.Subscriber("joints/green_pos", Float64MultiArray, self.green_listener)
-    self.red_pos_pub = rospy.Subscriber("joints/red_pos", Float64MultiArray, self.red_listener)
+    self.yellow_pos_sub = rospy.Subscriber("joints/yellow_pos", Float64MultiArray, self.yellow_listener)
+    self.blue_pos_sub = rospy.Subscriber("joints/blue_pos", Float64MultiArray, self.blue_listener)
+    self.green_pos_sub = rospy.Subscriber("joints/green_pos", Float64MultiArray, self.green_listener)
+    self.red_pos_sub = rospy.Subscriber("joints/red_pos", Float64MultiArray, self.red_listener)
     # initialize a publisher for final joint angle estimate output
     self.estimated_angles_pub = rospy.Publisher("estimated_joints", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
@@ -140,16 +140,34 @@ class image_converter:
     # joint2 is taken from the opp and adjacent on the y,z plane as it rotates around x
     opp = joints[2][1] - joints[1][1]
     adj = joints[2][2] - joints[1][2]
-    angles.append(np.arctan2(opp, adj))
+    # take the negative of the angle as the direction is flipped comapred to joint3
+    angles.append(-np.arctan2(opp, adj))
     # joint3 is taken from the opp and adjacent on the x,z plane as it rotates around y
     opp = joints[2][0] - joints[1][0]
     adj = joints[2][2] - joints[1][2]
     angles.append(np.arctan2(opp, adj))
+
+    # get rotation matrix for frame after first rotations around x and y
+    gamma = angles[1]
+    beta = angles[2]
+    rotation = np.array([
+      [np.cos(beta), 0, np.sin(beta)],
+      [-np.sin(gamma)*np.sin(beta), np.cos(gamma), -np.sin(gamma)*np.sin(beta)],
+      [np.cos(gamma)*np.sin(beta), np.sin(gamma), np.cos(beta)*np.cos(gamma)]
+    ])
+    # get vectors for y and z axis, don't need x to get the angle
+    y_axis = np.matmul(np.transpose(np.array([0,1,0])), rotation)
+    z_axis = np.matmul(np.transpose(np.array([0,0,1])), rotation)
+    # get transformed vector from green to red
+    g_r_vector = joints[3] - joints[2]
+    transformed_vector = np.matmul(np.transpose(g_r_vector), rotation)
     # joint4 is calculated on the opp and adjacent on it's plane of movement, neither xz nor yz
     # get distance between red and green on the x,y plane
-    opp = np.linalg.norm(joints[3][:2] - joints[2][:2])
-    adj = joints[3][2] - joints[2][2]
-    angles.append(np.arctan2(opp, adj))
+    opp = transformed_vector[1]
+    adj = transformed_vector[2]
+
+    # joint movement is negative of rotation angle to bring frame to the vector
+    angles.append(-np.arctan2(opp, adj))
 
     return np.array(angles)
 

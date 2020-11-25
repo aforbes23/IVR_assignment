@@ -89,7 +89,7 @@ class image_converter:
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
     if moments['m00'] == 0:
-      return self.detect_blue()
+      return [0.0, self.detect_blue[1]]
     else:
       x = int(moments['m10']/moments['m00'])
       y = int(moments['m01']/moments['m00'])

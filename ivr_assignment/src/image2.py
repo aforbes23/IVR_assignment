@@ -26,8 +26,11 @@ class image_converter:
     self.robot_joint2_pub = rospy.Publisher("/robot/joint2_position_controller/command", Float64, queue_size=10)
     self.robot_joint3_pub = rospy.Publisher("/robot/joint3_position_controller/command", Float64, queue_size=10)
     self.robot_joint4_pub = rospy.Publisher("/robot/joint4_position_controller/command", Float64, queue_size=10)
-    # initialize publisher and subscriber for joint angles and actual angles
-    self.joint_angles_pub = rospy.Publisher("joints2", Float64MultiArray, queue_size=10)
+    # initialize publishers for joint angles and joint positions
+    self.yellow_pos_pub = rospy.Publisher("joints/yellow_pos", Float64MultiArray, queue_size=10)
+    self.blue_pos_pub = rospy.Publisher("joints/blue_pos", Float64MultiArray, queue_size=10)
+    self.green_pos_pub = rospy.Publisher("joints/green_pos", Float64MultiArray, queue_size=10)
+    self.red_pos_pub = rospy.Publisher("joints/red_pos", Float64MultiArray, queue_size=10)
     self.control_angles_pub = rospy.Publisher("control_angles", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
     self.bridge = CvBridge()
@@ -38,19 +41,20 @@ class image_converter:
   def joint_trajectories(self):
     # gets the current time
     cur_time = np.array([rospy.get_time() - self.time_trajectory])
+    joint1 = np.array([0.0])
     joint2 = (np.pi/2) * np.sin( (np.pi/15) * cur_time)
     joint3 = (np.pi/2) * np.sin( (np.pi/18) * cur_time)
     # changed to avoid hitting the ground
     joint4 = (np.pi/3) * np.sin( (np.pi/20) * cur_time)
 
-    self.joints.data = np.array([joint2, joint3, joint4])
+    self.control_angles.data = np.array([joint1, joint2, joint3, joint4])
 
   # publishes the calculated angles into the topics used to control robot movement
   def publish_joint_trajectories(self):
-    self.robot_joint1_pub.publish(0.0)
-    self.robot_joint2_pub.publish(self.control_angles.data[0])
-    self.robot_joint3_pub.publish(self.control_angles.data[1])
-    self.robot_joint4_pub.publish(self.control_angles.data[2])
+    self.robot_joint1_pub.publish(self.control_angles.data[0])
+    self.robot_joint2_pub.publish(self.control_angles.data[1])
+    self.robot_joint3_pub.publish(self.control_angles.data[2])
+    self.robot_joint4_pub.publish(self.control_angles.data[3])
     self.control_angles_pub.publish(self.control_angles)
     
   # detects the yellow joint at the base of the robot and assigns coordinates to it
@@ -84,20 +88,25 @@ class image_converter:
     kernel = np.ones((5,5), np.uint8)
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
-    x = int(moments['m10']/moments['m00'])
-    y = int(moments['m01']/moments['m00'])
+    if moments['m00'] == 0:
+      return self.detect_blue()
+    else:
+      x = int(moments['m10']/moments['m00'])
+      y = int(moments['m01']/moments['m00'])
     
     return np.array([x,y])
     
-
   def detect_red(self):
     cv_image_hsv = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2HSV)
     joint = cv2.inRange(cv_image_hsv, (0,50, 50), (5,255,255))
     kernel = np.ones((5,5), np.uint8)
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
-    x = int(moments['m10']/moments['m00'])
-    y = int(moments['m01']/moments['m00'])
+    if moments['m00'] == 0:
+      return self.detect_green()
+    else:
+      x = int(moments['m10']/moments['m00'])
+      y = int(moments['m01']/moments['m00'])
     
     return np.array([x,y])
 
@@ -105,7 +114,7 @@ class image_converter:
   # the given length to get a conversion factor
   def pixel_to_meter(self, yellow_centre, blue_centre):
     link_length_p = np.linalg.norm(blue_centre - yellow_centre)
-    con_factor = 3/link_length_p
+    con_factor = 2.5/link_length_p
     return con_factor
 
   # takes the coordinates of the centres in pixels and converts them to meters for
@@ -113,28 +122,18 @@ class image_converter:
   def convert_centres(self, centres_p):
     centres_m = []
     # set joint 1 as the centre of the image
-    centres_m.append(np.array([0,0]))
+    centres_m.append([0,0])
     con_factor = self.pixel_to_meter(centres_p[0], centres_p[1])
 
     # for each joint after the first, get pixel values relative to joint 1 and convert to metres
     for centre in centres_p[1:]:
         x = (centre[0] - centres_p[0][0])*con_factor
-        y = (centre[1] - centres_p[0][1])*con_factor
-        centres_m.append(np.array([x,y]))
+        # y pixel value will always be greater than other joints so subract from that to get y axis pointing up
+        z = (centres_p[0][1] - centre[1])*con_factor
+        centres_m.append(np.array([x,z]))
     
     return centres_m
 
-  # calculates the angle for the joint relative to the base frame
-  def find_angles(self, centres_m):
-    angles = []
-    for i in range(1,len(centres_m)):
-      opp = centres_m[i-1][0] - centres_m[i][0]
-      adj = centres_m[i][1] - centres_m[i-1][1]
-      # as y axis is facing away from the camera, take the negative of the angle to use with image1
-      angle = -np.arctan2(opp, adj)
-      angles.append(angle)
-  
-    return np.array(angles)
 
 
 # Recieve data, process it, and publish
@@ -153,9 +152,16 @@ class image_converter:
     self.joint_trajectories()
     self.publish_joint_trajectories()
 
-    # setup array for publishing
-    self.joints = Float64MultiArray()
-    self.joints.data = np.array([0.0, 0.0, 0.0])
+    # setup arrays for publishing
+    self.yellow_pos = Float64MultiArray()
+    self.blue_pos = Float64MultiArray()
+    self.green_pos = Float64MultiArray()
+    self.red_pos = Float64MultiArray()
+
+    self.yellow_pos.data = np.array([0.0, 0.0])
+    self.blue_pos.data = np.array([0.0, 0.0])
+    self.green_pos.data = np.array([0.0, 0.0])
+    self.red_pos.data = np.array([0.0, 0.0])
 
     # get joint centres
     yellow = self.detect_yellow()
@@ -163,10 +169,11 @@ class image_converter:
     green = self.detect_green()
     red = self.detect_red()
 
-    # get the values to publish
+    # get the intial joint positions
     centres_p = [yellow, blue, green, red]
-    centres_m = self.convert_centres(centres_p)
-    self.joints.data = self.find_angles(centres_m)
+    # get the positions for publishing
+    [self.yellow_pos.data, self.blue_pos.data, self.green_pos.data, self.red_pos.data] = self.convert_centres(centres_p)
+
 
     im2=cv2.imshow('window2', self.cv_image2)
     cv2.waitKey(1)
@@ -174,8 +181,11 @@ class image_converter:
     # Publish the results
     try: 
       self.image_pub2.publish(self.bridge.cv2_to_imgmsg(self.cv_image2, "bgr8"))
-      # publish the joints to the joints2 topic
-      self.joint_angles_pub.publish(self.joints)
+      # publish the joints to the joints_pos2 topic
+      self.yellow_pos_pub.publish(self.yellow_pos)
+      self.blue_pos_pub.publish(self.blue_pos)
+      self.green_pos_pub.publish(self.green_pos)
+      self.red_pos_pub.publish(self.red_pos)
     except CvBridgeError as e:
       print(e)
 

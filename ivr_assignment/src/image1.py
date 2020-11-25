@@ -25,8 +25,11 @@ class image_converter:
     self.robot_joint2_pub = rospy.Publisher("/robot/joint2_position_controller/command", Float64, queue_size=10)
     self.robot_joint3_pub = rospy.Publisher("/robot/joint3_position_controller/command", Float64, queue_size=10)
     self.robot_joint4_pub = rospy.Publisher("/robot/joint4_position_controller/command", Float64, queue_size=10)
-    # initialize a subscirber for joint angles from image2
-    self.joint_angles_sub = rospy.Subscriber("/joints2/", Float64MultiArray, self.angle_listener)
+    # initialize subscirbers for joint positions from image2
+    self.yellow_pos_pub = rospy.Subscriber("joints/yellow_pos", Float64MultiArray, self.yellow_listener)
+    self.blue_pos_pub = rospy.Subscriber("joints/blue_pos", Float64MultiArray, self.blue_listener)
+    self.green_pos_pub = rospy.Subscriber("joints/green_pos", Float64MultiArray, self.green_listener)
+    self.red_pos_pub = rospy.Subscriber("joints/red_pos", Float64MultiArray, self.red_listener)
     # initialize a publisher for final joint angle estimate output
     self.estimated_angles_pub = rospy.Publisher("estimated_joints", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
@@ -64,8 +67,11 @@ class image_converter:
     kernel = np.ones((5,5), np.uint8)
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
-    x = int(moments['m10']/moments['m00'])
-    y = int(moments['m01']/moments['m00'])
+    if moments['m00'] == 0:
+      return self.detect_blue()
+    else:
+      x = int(moments['m10']/moments['m00'])
+      y = int(moments['m01']/moments['m00'])
     
     return np.array([x,y])
     
@@ -76,8 +82,11 @@ class image_converter:
     kernel = np.ones((5,5), np.uint8)
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
-    x = int(moments['m10']/moments['m00'])
-    y = int(moments['m01']/moments['m00'])
+    if moments['m00'] == 0:
+      return self.detect_green()
+    else:
+      x = int(moments['m10']/moments['m00'])
+      y = int(moments['m01']/moments['m00'])
     
     return np.array([x,y])
 
@@ -85,7 +94,7 @@ class image_converter:
   # the given length to get a conversion factor
   def pixel_to_meter(self, yellow_centre, blue_centre):
     link_length_p = np.linalg.norm(blue_centre - yellow_centre)
-    con_factor = 3/link_length_p
+    con_factor = 2.5/link_length_p
     return con_factor
 
   # takes the coordinates of the centres in pixels and converts them to meters for
@@ -99,39 +108,66 @@ class image_converter:
     # for each joint after the first, get pixel values relative to joint 1 and convert to metres
     # y values should be negative as they shouldn't be below joint 1
     for centre in centres_p[1:]:
-        x = (centre[0] - centres_p[0][0])*con_factor
-        y = (centre[1] - centres_p[0][1])*con_factor
-        centres_m.append(np.array([x,y]))
+        y = (centre[0] - centres_p[0][0])*con_factor
+        # y pixel value will always be greater than other joints so subract from that to get y axis pointing up
+        z = (centres_p[0][1] - centre[1])*con_factor
+        centres_m.append(np.array([y,z]))
     
-    return centres_m
+    return np.array(centres_m)
 
-  # calculates the angle for the joint relative to the base frame
-  def find_angles(self, centres_m):
+
+  # uses the data from image2 to get the positions of each joint in the 3d space
+  def get_3d_positions(self):
+    joints = []
+    # for each joint, get the x position from im2, the y position from im1 and the z position from either
+    # as it will be the same in both
+    for i in range(self.im1_positions.shape[0]):
+      x = self.im2_positions[i][0]
+      y = self.im1_positions[i][0]
+      if np.isnan(self.im2_positions[i][1]):
+        z = self.im1_positions[i][1]
+      else:
+        z = self.im2_positions[i][1]
+      joints.append(np.array([x,y,z]))
+
+    return np.array(joints)
+    
+  def get_angles(self):
     angles = []
-    for i in range(1,len(centres_m)):
-      opp = centres_m[i-1][0] - centres_m[i][0]
-      adj = centres_m[i][1] - centres_m[i-1][1]
-      angle = np.arctan2(opp, adj)
-      angles.append(angle)
-  
+    joints = self.joints_pos
+    # joint1 fixed in this case
+    angles.append(0.0)
+    # joint2 is taken from the opp and adjacent on the y,z plane as it rotates around x
+    opp = joints[2][1] - joints[1][1]
+    adj = joints[2][2] - joints[1][2]
+    angles.append(np.arctan2(opp, adj))
+    # joint3 is taken from the opp and adjacent on the x,z plane as it rotates around y
+    opp = joints[2][0] - joints[1][0]
+    adj = joints[2][2] - joints[1][2]
+    angles.append(np.arctan2(opp, adj))
+    # joint4 is calculated on the opp and adjacent on it's plane of movement, neither xz nor yz
+    # get distance between red and green on the x,y plane
+    opp = np.linalg.norm(joints[3][:2] - joints[2][:2])
+    adj = joints[3][2] - joints[2][2]
+    angles.append(np.arctan2(opp, adj))
+
     return np.array(angles)
-  
-  # defines the angle of the joint in it's own frame
-  def find_final_angles(self):
-    # no need to use angles[0] as it is always 0 in this case
-    # for 1 and 2, use the angle calculate in each of the cameras on their respective rotation axis
-    joint2 = self.im1_angles[1]
-    joint3 = self.im2_angles[1]
-    # add together the angles observed in each frame as it will be rotated depending on 2 and 3
-    # take away 2 and 3 to take it back to it's own frame
-    joint4 = self.im1_angles[2] + self.im2_angles[2] - joint2 - joint3
-    return np.array([joint2, joint3, joint4])
+
+
 
   
-  # Recieve angles from image2.py and assigns them to a variable for use in method above
-  def angle_listener(self, arr):
-    self.im2_angles = np.array(arr.data)
+  # Recieve positions of joints from image2 in 4 methods below
+  def yellow_listener(self, arr):
+    self.im2_yellow = np.array(arr.data)
 
+  def blue_listener(self, arr):
+    self.im2_blue = np.array(arr.data)
+  
+  def green_listener(self, arr):
+    self.im2_green = np.array(arr.data)
+  
+  def red_listener(self, arr):
+    self.im2_red = np.array(arr.data)
 
   # Recieve data from camera 1, process it, and publish
   def callback1(self,data):
@@ -149,13 +185,18 @@ class image_converter:
 
     # get intial joint angles
     centres_p = [yellow, blue, green, red]
-    centres_m = self.convert_centres(centres_p)
-    self.im1_angles = self.find_angles(centres_m)
+    self.im1_positions = self.convert_centres(centres_p)
+    self.im2_positions = np.array([self.im2_yellow, self.im2_blue, self.im2_green, self.im2_red])
+
+    # get joint positions
+    self.joints_pos = self.get_3d_positions()
+
+
 
     # find final joint angles and put them in a variable for publishing
     self.estimated_angles = Float64MultiArray()
-    self.estimated_angles.data = np.array([0.0,0.0,0.0])
-    self.estimated_angles.data = self.find_final_angles()
+    self.estimated_angles.data = np.array([0.0,0.0,0.0,0.0])
+    self.estimated_angles.data = self.get_angles()
 
 
     
@@ -184,5 +225,4 @@ def main(args):
 # run the code if the node is called
 if __name__ == '__main__':
     main(sys.argv)
-
 

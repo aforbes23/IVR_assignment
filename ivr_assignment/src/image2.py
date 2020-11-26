@@ -32,6 +32,8 @@ class image_converter:
     self.green_pos_pub = rospy.Publisher("joints/green_pos", Float64MultiArray, queue_size=10)
     self.red_pos_pub = rospy.Publisher("joints/red_pos", Float64MultiArray, queue_size=10)
     self.control_angles_pub = rospy.Publisher("control_angles", Float64MultiArray, queue_size=10)
+    # initialize a publisher for the position of the target
+    self.target_pos_pub = rospy.Publisher("target_im2", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
     self.bridge = CvBridge()
     # get times
@@ -89,7 +91,8 @@ class image_converter:
     joint = cv2.dilate(joint, kernel, iterations = 3)
     moments = cv2.moments(joint)
     if moments['m00'] == 0:
-      return [0.0, self.detect_blue[1]]
+      temp = self.detect_blue()
+      return [0.0, temp[1]]
     else:
       x = int(moments['m10']/moments['m00'])
       y = int(moments['m01']/moments['m00'])
@@ -134,6 +137,35 @@ class image_converter:
     
     return centres_m
 
+  # 2.2 -----------------
+
+  def find_target(self):
+    cv_image_hsv = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(cv_image_hsv, (15, 0, 0), (15, 255, 255))
+    grey = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2GRAY)
+    isolated_grey = cv2.bitwise_and(mask, grey)
+    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10)
+    centres = []
+    if circles is not None:
+      circles = np.round(circles[0, :]).astype("int")
+      for (x, y, r) in circles:
+        centres.append(np.array([x,y]))
+        print(x,y)
+    return centres
+
+  def target_to_meters(self, target):
+    image_centre = self.detect_yellow()
+    blue_centre = self.detect_blue()
+    con_factor = self.pixel_to_meter(image_centre, blue_centre)
+    self.target_metres = (target - image_centre)*con_factor
+    
+  def publish_target(self):
+    self.target_pos = Float64MultiArray()
+    self.target_pos.data = [0, 0]
+    self.target_pos.data = self.target_metres
+    self.target_pos_pub.publish(self.target_pos)
+    
+
 
 
 # Recieve data, process it, and publish
@@ -151,6 +183,11 @@ class image_converter:
     self.control_angles.data = np.array([0.0,0.0,0.0])
     self.joint_trajectories()
     self.publish_joint_trajectories()
+
+    # find and publish the target coords
+    circle_centres = self.find_target()
+    self.target_to_meters(circle_centres[0])
+    self.publish_target()
 
     # setup arrays for publishing
     self.yellow_pos = Float64MultiArray()

@@ -30,6 +30,9 @@ class image_converter:
     self.blue_pos_sub = rospy.Subscriber("joints/blue_pos", Float64MultiArray, self.blue_listener)
     self.green_pos_sub = rospy.Subscriber("joints/green_pos", Float64MultiArray, self.green_listener)
     self.red_pos_sub = rospy.Subscriber("joints/red_pos", Float64MultiArray, self.red_listener)
+    # initialise a subscriber for the target coords from image2 and publisher for final coords
+    self.im2_target_sub = rospy.Subscriber("target_im2", Float64MultiArray, self.target_listener)
+    self.target_estimate_pub = rospy.Publisher("target_estimate", Float64MultiArray, queue_size=10)
     # initialize a publisher for final joint angle estimate output
     self.estimated_angles_pub = rospy.Publisher("estimated_joints", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
@@ -116,6 +119,21 @@ class image_converter:
     return np.array(centres_m)
 
 
+  def find_target(self):
+    cv_image_hsv = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(cv_image_hsv)
+    thresholded = cv2.inRange(cv_image_hsv, (15, 120, 120), (15, 255, 255))
+    orange_img = cv2.GaussianBlur(thresholded, (5,5), cv2.BORDER_DEFAULT)
+    gray = cv2.cvtColor(orange_img, v)
+    circles = cv2.HoughCircles(gray, cv2.CV_HOUGH_GRADIENT, 1.2, 100)
+    centres = []
+    if circles is not None:
+      circles = np.round(circles[0, :]).astype("int")
+      for (x, y, r) in circles:
+        centres.append([x,y])
+    return centres
+
+
   # uses the data from image2 to get the positions of each joint in the 3d space
   def get_3d_positions(self):
     joints = []
@@ -172,7 +190,39 @@ class image_converter:
     return np.array(angles)
 
 
+  def find_target(self):
+    cv_image_hsv = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(cv_image_hsv, (15, 0, 0), (15, 255, 255))
+    grey = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2GRAY)
+    isolated_grey = cv2.bitwise_and(mask, grey)
+    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10)
+    centres = []
+    if circles is not None:
+      circles = np.round(circles[0, :]).astype("int")
+      for (x, y, r) in circles:
+        centres.append(np.array([x,y]))
+    return centres
 
+  def target_to_meters(self, target):
+    image_centre = self.detect_yellow()
+    blue_centre = self.detect_blue()
+    con_factor = self.pixel_to_meter(image_centre, blue_centre)
+    self.im1_target = (target - image_centre)*con_factor
+
+  def get_3d_target_pos(self):
+    x = self.im2_target[0]
+    y = self.im1_target[0]
+    if np.isnan(self.im2_target[1]):
+      z = self.im1_target[1]
+    else:
+      z = self.im2_target[1]
+    return np.array([x,y,z])
+  
+  def publish_target(self):
+    target_pos = Float64MultiArray()
+    target_pos.data = [0,0,0]
+    target_pos.data = self.target_estimate
+    self.target_estimate_pub.publish(target_pos)
   
   # Recieve positions of joints from image2 in 4 methods below
   def yellow_listener(self, arr):
@@ -186,6 +236,10 @@ class image_converter:
   
   def red_listener(self, arr):
     self.im2_red = np.array(arr.data)
+  
+  def target_listener(self, coords):
+    self.im2_target = np.array(coords.data)
+
 
   # Recieve data from camera 1, process it, and publish
   def callback1(self,data):
@@ -195,11 +249,20 @@ class image_converter:
     except CvBridgeError as e:
       print(e)
 
+    # find im1 target coordines
+    circle_centres = self.find_target()
+    self.target_to_meters(circle_centres[0])
+
+    # get and publish final target estimate
+    self.target_estimate = self.get_3d_target_pos()
+    self.publish_target()
+
     # get joint coordinates
     yellow = self.detect_yellow()
     blue = self.detect_blue()
     green = self.detect_green()
     red = self.detect_red()
+    
 
     # get intial joint angles
     centres_p = [yellow, blue, green, red]

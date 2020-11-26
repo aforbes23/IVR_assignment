@@ -119,21 +119,6 @@ class image_converter:
     return np.array(centres_m)
 
 
-  def find_target(self):
-    cv_image_hsv = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(cv_image_hsv)
-    thresholded = cv2.inRange(cv_image_hsv, (15, 120, 120), (15, 255, 255))
-    orange_img = cv2.GaussianBlur(thresholded, (5,5), cv2.BORDER_DEFAULT)
-    gray = cv2.cvtColor(orange_img, v)
-    circles = cv2.HoughCircles(gray, cv2.CV_HOUGH_GRADIENT, 1.2, 100)
-    centres = []
-    if circles is not None:
-      circles = np.round(circles[0, :]).astype("int")
-      for (x, y, r) in circles:
-        centres.append([x,y])
-    return centres
-
-
   # uses the data from image2 to get the positions of each joint in the 3d space
   def get_3d_positions(self):
     joints = []

@@ -35,6 +35,9 @@ class image_converter:
     self.target_estimate_pub = rospy.Publisher("target_estimate", Float64MultiArray, queue_size=10)
     # initialize a publisher for final joint angle estimate output
     self.estimated_angles_pub = rospy.Publisher("estimated_joints", Float64MultiArray, queue_size=10)
+    # intialize a publisher for the forward kinematics end effector estimate
+    self.fk_pub = rospy.Publisher("fk_estimate", Float64MultiArray, queue_size=10)
+    self.end_effector_pub = rospy.Publisher("end_effector_pos", Float64MultiArray, queue_size=10)
     # initialize the bridge between openCV and ROS
     self.bridge = CvBridge()
     # get times
@@ -211,6 +214,25 @@ class image_converter:
     else:
       z = self.im2_target[1]
     return np.array([x,y,z])
+
+  def forward_kinematics(self):
+    [p1, a2, a3, a4] = self.estimated_angles.data
+
+    self.end_effector_fk = np.array([
+      3*np.sin(a3)*np.cos(a4)*np.cos(p1) + 3.5*np.sin(a3)*np.cos(p1) - 3*np.sin(a4)*np.cos(a2)*np.sin(p1) - 3*np.cos(a3)*np.cos(a4)*np.sin(p1)*np.sin(a2) - 3.5*np.cos(a3)*np.sin(p1)*np.sin(a2),
+      -3*np.sin(a3)*np.cos(a4)*np.sin(p1) - 3.5*np.sin(a3)*np.sin(p1) - 3*np.sin(a4)*np.cos(p1)*np.cos(a2) - 3*np.cos(a3)*np.cos(a4)*np.cos(p1)*np.sin(a2) - 3.5*np.cos(a3)*np.cos(p1)*np.sin(a2),
+      -3*np.sin(a4)*np.sin(a2) + 3*np.cos(a3)*np.cos(a4)*np.cos(a2) + 3.5*np.cos(a3)*np.cos(a2) + 2.5
+    ])
+
+  def publish_fk(self):
+    self.fk_estimate = Float64MultiArray()
+    self.fk_estimate.data = self.end_effector_fk
+    self.fk_pub.publish(self.fk_estimate)
+
+  def publish_end_effector(self):
+    end_effector = Float64MultiArray()
+    end_effector.data = self.joints_pos[3]
+    self.end_effector_pub.publish(end_effector)
   
   # publish the position to a suitable topic
   def publish_target(self):
@@ -274,6 +296,10 @@ class image_converter:
     self.estimated_angles = Float64MultiArray()
     self.estimated_angles.data = np.array([0.0,0.0,0.0,0.0])
     self.estimated_angles.data = self.get_angles()
+
+    self.forward_kinematics()
+    self.publish_fk()
+    self.publish_end_effector()
 
 
     

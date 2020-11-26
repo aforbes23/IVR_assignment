@@ -139,34 +139,41 @@ class image_converter:
 
   # 2.2 -----------------
 
+  # find the orange sphere in the image
   def find_target(self):
+    # turn image to hsv and isolate the orange colour
     cv_image_hsv = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(cv_image_hsv, (15, 0, 0), (15, 255, 255))
+    mask = cv2.inRange(cv_image_hsv, (10, 0, 0), (20, 255, 255))
+    # get a grayscale version of the image to feed to HoughCircles and apply the mask to it
     grey = cv2.cvtColor(self.cv_image2, cv2.COLOR_BGR2GRAY)
     isolated_grey = cv2.bitwise_and(mask, grey)
-    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10)
+    # find circles in the image based on the given parameters
+    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10, minRadius=10, maxRadius=15)
+
+    # get the centre of each circle found, should only be one in theory
     centres = []
     if circles is not None:
       circles = np.round(circles[0, :]).astype("int")
       for (x, y, r) in circles:
         centres.append(np.array([x,y]))
-        print(x,y)
     return centres
-
+  
+  # get the coordinates of the circle in meters as before
   def target_to_meters(self, target):
     image_centre = self.detect_yellow()
     blue_centre = self.detect_blue()
     con_factor = self.pixel_to_meter(image_centre, blue_centre)
-    self.target_metres = (target - image_centre)*con_factor
-    
+    x = target[0] - image_centre[0]
+    z = image_centre[1] - target[1]
+    self.target_metres = np.array([x,z])*con_factor
+  
+  # publish the position to a topic to be read by image1
   def publish_target(self):
     self.target_pos = Float64MultiArray()
     self.target_pos.data = [0, 0]
     self.target_pos.data = self.target_metres
     self.target_pos_pub.publish(self.target_pos)
     
-
-
 
 # Recieve data, process it, and publish
   def callback2(self,data):

@@ -189,13 +189,18 @@ class image_converter:
 
     return np.array(angles)
 
-
+  # find the orange sphere in the image
   def find_target(self):
+    # turn image to hsv and isolate the orange colour
     cv_image_hsv = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(cv_image_hsv, (15, 0, 0), (15, 255, 255))
+    mask = cv2.inRange(cv_image_hsv, (10, 0, 0), (20, 255, 255))
+    # get a grayscale version of the image to feed to HoughCircles and apply the mask to it
     grey = cv2.cvtColor(self.cv_image1, cv2.COLOR_BGR2GRAY)
     isolated_grey = cv2.bitwise_and(mask, grey)
-    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10)
+    # find circles in the image based on the given parameters
+    circles = cv2.HoughCircles(isolated_grey, cv2.HOUGH_GRADIENT, 1.2, 100, param1=50, param2=10, minRadius=10, maxRadius=15)
+
+    # get the centre of each circle found, should only be one in theory
     centres = []
     if circles is not None:
       circles = np.round(circles[0, :]).astype("int")
@@ -203,12 +208,16 @@ class image_converter:
         centres.append(np.array([x,y]))
     return centres
 
+  # get the coordinates of the circle in meters as before
   def target_to_meters(self, target):
     image_centre = self.detect_yellow()
     blue_centre = self.detect_blue()
     con_factor = self.pixel_to_meter(image_centre, blue_centre)
-    self.im1_target = (target - image_centre)*con_factor
+    y = target[0] - image_centre[0]
+    z = image_centre[1] - target[1]
+    self.im1_target = np.array([y,z])*con_factor
 
+  # as with the other joints, get the 3d position of the sphere using the data from image2
   def get_3d_target_pos(self):
     x = self.im2_target[0]
     y = self.im1_target[0]
@@ -218,6 +227,7 @@ class image_converter:
       z = self.im2_target[1]
     return np.array([x,y,z])
   
+  # publish the position to a suitable topic
   def publish_target(self):
     target_pos = Float64MultiArray()
     target_pos.data = [0,0,0]
@@ -237,6 +247,7 @@ class image_converter:
   def red_listener(self, arr):
     self.im2_red = np.array(arr.data)
   
+  # get the xz coordinates of the target from image2
   def target_listener(self, coords):
     self.im2_target = np.array(coords.data)
 

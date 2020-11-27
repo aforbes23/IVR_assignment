@@ -6,7 +6,7 @@ import rospy
 import cv2
 import numpy as np
 from std_msgs.msg import String
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64MultiArray, Float64
 from cv_bridge import CvBridge, CvBridgeError
 
@@ -34,6 +34,8 @@ class image_converter:
     # initialise a subscriber for the target coords from image2 and publisher for final coords
     self.im2_target_sub = rospy.Subscriber("target_im2", Float64MultiArray, self.target_listener)
     self.target_estimate_pub = rospy.Publisher("target_estimate", Float64MultiArray, queue_size=10)
+    # initialise a subscriber for the real joint angles
+    self.real_angles_sub = rospy.Subscriber("robot/joint_states", JointState, self.angles_listener)
     # initialize a publisher for final joint angle estimate output
     self.estimated_angles_pub = rospy.Publisher("estimated_joints", Float64MultiArray, queue_size=10)
     # intialize a publisher for the forward kinematics end effector estimate
@@ -219,17 +221,19 @@ class image_converter:
 
 
   def forward_kinematics(self):
-    [p1, a2, a3, a4] = self.estimated_angles.data
+    a1 = self.real_angles[0]
+    [_, a2, a3, a4] = self.estimated_angles.data
 
     self.end_effector_fk = np.array([
-      3*np.sin(a3)*np.cos(a4)*np.cos(p1) + 3.5*np.sin(a3)*np.cos(p1) - 3*np.sin(a4)*np.cos(a2)*np.sin(p1) - 3*np.cos(a3)*np.cos(a4)*np.sin(p1)*np.sin(a2) - 3.5*np.cos(a3)*np.sin(p1)*np.sin(a2),
-      -3*np.sin(a3)*np.cos(a4)*np.sin(p1) - 3.5*np.sin(a3)*np.sin(p1) - 3*np.sin(a4)*np.cos(p1)*np.cos(a2) - 3*np.cos(a3)*np.cos(a4)*np.cos(p1)*np.sin(a2) - 3.5*np.cos(a3)*np.cos(p1)*np.sin(a2),
+      3*np.sin(a3)*np.cos(a4)*np.cos(a1) + 3.5*np.sin(a3)*np.cos(a1) - 3*np.sin(a4)*np.cos(a2)*np.sin(a1) - 3*np.cos(a3)*np.cos(a4)*np.sin(a1)*np.sin(a2) - 3.5*np.cos(a3)*np.sin(a1)*np.sin(a2),
+      -3*np.sin(a3)*np.cos(a4)*np.sin(a1) - 3.5*np.sin(a3)*np.sin(a1) - 3*np.sin(a4)*np.cos(a1)*np.cos(a2) - 3*np.cos(a3)*np.cos(a4)*np.cos(a1)*np.sin(a2) - 3.5*np.cos(a3)*np.cos(a1)*np.sin(a2),
       -3*np.sin(a4)*np.sin(a2) + 3*np.cos(a3)*np.cos(a4)*np.cos(a2) + 3.5*np.cos(a3)*np.cos(a2) + 2.5
     ])
 
   def open_loop(self):
     target = self.target_estimate
-    [a1, a2, a3, a4] = self.estimated_angles.data
+    a1 = -self.real_angles[0]
+    [_, a2, a3, a4] = self.estimated_angles.data
 
     jacobian = np.array([
       [
@@ -303,6 +307,10 @@ class image_converter:
   # get the xz coordinates of the target from image2
   def target_listener(self, coords):
     self.im2_target = np.array(coords.data)
+
+  def angles_listener(self, jointState):
+    angles = jointState.position
+    self.real_angles = angles
 
 
   # Recieve data from camera 1, process it, and publish

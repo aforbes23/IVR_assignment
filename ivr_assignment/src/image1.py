@@ -22,6 +22,7 @@ class image_converter:
     # initialize a subscriber to recieve messages rom a topic named /robot/camera1/image_raw and use callback function to recieve data
     self.image_sub1 = rospy.Subscriber("/camera1/robot/image_raw",Image,self.callback1)
     # initialize a publisher for the robot joint controllers
+    self.robot_joint1_pub = rospy.Publisher("/robot/joint1_position_controller/command", Float64, queue_size=10)
     self.robot_joint2_pub = rospy.Publisher("/robot/joint2_position_controller/command", Float64, queue_size=10)
     self.robot_joint3_pub = rospy.Publisher("/robot/joint3_position_controller/command", Float64, queue_size=10)
     self.robot_joint4_pub = rospy.Publisher("/robot/joint4_position_controller/command", Float64, queue_size=10)
@@ -42,6 +43,7 @@ class image_converter:
     self.bridge = CvBridge()
     # get times
     self.time_trajectory = rospy.get_time()
+    self.first_time = rospy.get_time()
 
   # detects the yellow joint at the base of the robot and assigns coordinates to it
   def detect_yellow(self):
@@ -215,6 +217,7 @@ class image_converter:
       z = self.im2_target[1]
     return np.array([x,y,z])
 
+
   def forward_kinematics(self):
     [p1, a2, a3, a4] = self.estimated_angles.data
 
@@ -223,6 +226,49 @@ class image_converter:
       -3*np.sin(a3)*np.cos(a4)*np.sin(p1) - 3.5*np.sin(a3)*np.sin(p1) - 3*np.sin(a4)*np.cos(p1)*np.cos(a2) - 3*np.cos(a3)*np.cos(a4)*np.cos(p1)*np.sin(a2) - 3.5*np.cos(a3)*np.cos(p1)*np.sin(a2),
       -3*np.sin(a4)*np.sin(a2) + 3*np.cos(a3)*np.cos(a4)*np.cos(a2) + 3.5*np.cos(a3)*np.cos(a2) + 2.5
     ])
+
+  def open_loop(self):
+    target = self.target_estimate
+    [a1, a2, a3, a4] = self.estimated_angles.data
+
+    jacobian = np.array([
+      [
+        -3*np.sin(a3)*np.cos(a4)*np.sin(a1) - 3.5*np.sin(a3)*np.sin(a1) -3*np.sin(a4)*np.cos(a2)*np.cos(a1) - 3*np.cos(a3)*np.cos(a4)*np.cos(a1)*np.sin(a2) - 3.5*np.cos(a3)*np.cos(a1)*np.sin(a2),
+        3*np.sin(a4)*np.sin(a2)*np.sin(a1) - 3*np.cos(a3)*np.cos(a4)*np.sin(a1)*np.cos(a2) - 3.5*np.cos(a3)*np.sin(a1)*np.cos(a2),
+        3*np.cos(a3)*np.cos(a4)*np.cos(a1) + 3.5*np.cos(a3)*np.cos(a1) + 3*np.sin(a3)*np.cos(a4)*np.sin(a1)*np.sin(a2) + 3.5*np.sin(a3)*np.sin(a1)*np.sin(a2),
+        -3*np.sin(a3)*np.sin(a4)*np.cos(a1) - 3*np.cos(a4)*np.cos(a2)*np.sin(a1) + 3*np.cos(a3)*np.sin(a4)*np.sin(a1)*np.sin(a2)
+      ],
+      [
+        -3*np.sin(a3)*np.cos(a4)*np.cos(a1) - 3.5*np.sin(a3)*np.cos(a1) + 3*np.sin(a4)*np.sin(a1)*np.cos(a2) + 3*np.cos(a3)*np.cos(a4)*np.sin(a1)*np.sin(a2) + 3.5*np.cos(a3)*np.sin(a1)*np.sin(a2),
+        3*np.sin(a4)*np.cos(a1)*np.sin(a2) - 3*np.cos(a3)*np.cos(a4)*np.cos(a1)*np.cos(a2) - 3.5*np.cos(a3)*np.cos(a1)*np.cos(a2),
+        -3*np.cos(a3)*np.cos(a4)*np.sin(a1) - 3.5*np.cos(a3)*np.sin(a1) + 3*np.sin(a3)*np.cos(a4)*np.cos(a1)*np.sin(a2) + 3.5*np.sin(a3)*np.cos(a1)*np.sin(a2),
+        3*np.sin(a3)*np.sin(a4)*np.sin(a1) - 3*np.cos(a4)*np.cos(a1)*np.cos(a2) + 3*np.cos(a3)*np.sin(a4)*np.cos(a1)*np.sin(a2)
+      ],
+      [
+        0,
+        -3*np.sin(a4)*np.cos(a2) - 3*np.cos(a3)*np.cos(a4)*np.sin(a2) - 3.5*np.cos(a3)*np.sin(a2),
+        -3*np.sin(a3)*np.cos(a4)*np.cos(a2) - 3.5*np.sin(a3)*np.cos(a2),
+        -3*np.cos(a4)*np.sin(a2) - 3*np.cos(a3)*np.sin(a4)*np.cos(a2)
+      ]
+    ])
+
+    pinv_jac = np.linalg.pinv(jacobian)
+    current_time = rospy.get_time()
+    dt = current_time - self.first_time
+    self.first_time = current_time
+
+    x_v = (target - self.joints_pos[3])/dt
+    q_v = np.dot(pinv_jac,x_v)
+
+    q = np.array([a1, a2, a3, a4]) + dt*q_v
+    self.publish_joint_instructions(q)
+    
+
+  def publish_joint_instructions(self, angles):
+    self.robot_joint1_pub.publish(angles[0])
+    self.robot_joint2_pub.publish(angles[1])
+    self.robot_joint3_pub.publish(angles[2])
+    self.robot_joint4_pub.publish(angles[3])
 
   def publish_fk(self):
     self.fk_estimate = Float64MultiArray()
@@ -297,11 +343,13 @@ class image_converter:
     self.estimated_angles.data = np.array([0.0,0.0,0.0,0.0])
     self.estimated_angles.data = self.get_angles()
 
+    # get the end_effector from forward kinematics
     self.forward_kinematics()
     self.publish_fk()
     self.publish_end_effector()
 
-
+    # get the robot to follow the target
+    self.open_loop()
     
     # Uncomment if you want to save the image
     #cv2.imwrite('image_copy.png', cv_image)
